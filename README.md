@@ -1,10 +1,7 @@
 <p align="center">
-<img width="300" src="assets/logo.png">
+<img width="300" src="assets/nano-vllm-ms-logo.png">
 </p>
 
-<p align="center">
-<a href="https://trendshift.io/repositories/15323" target="_blank"><img src="https://trendshift.io/api/badge/repositories/15323" alt="GeeeekExplorer%2Fnano-vllm | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
-</p>
 
 # Nano-vLLM
 
