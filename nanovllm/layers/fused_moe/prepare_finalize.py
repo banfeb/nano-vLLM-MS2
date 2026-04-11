@@ -23,7 +23,7 @@ class MoEPrepareAndFinalizeNoEP(mk.FusedMoEPrepareAndFinalize):
         topk_weights: torch.Tensor,
         topk_ids: torch.Tensor,
     ) -> None:
-        """权重聚合"""
+        """权重聚合在算子中已经完成，这个函数只需要把结果从fused_expert_output复制到output即可"""
         if output is None:
             return fused_expert_output
         

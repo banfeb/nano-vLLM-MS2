@@ -32,6 +32,7 @@ def fused_moe_triton_kernel(
     BLOCK_SIZE_N: tl.constexpr,
     BLOCK_SIZE_K: tl.constexpr,
     GROUP_SIZE_M: tl.constexpr,
+    MUL_ROUTED_WEIGHT: tl.constexpr,
     topk: tl.constexpr,
     compute_type: tl.constexpr,
 ):
@@ -82,6 +83,14 @@ def fused_moe_triton_kernel(
         a_ptrs += BLOCK_SIZE_K * stride_ak
         b_ptrs += BLOCK_SIZE_K * stride_bk
         
+    if MUL_ROUTED_WEIGHT:
+        moe_weight = tl.load(
+            topk_weights_ptr + offs_token, 
+            mask=token_mask,
+            other=0,
+        )
+        accumulator = accumulator * moe_weight[:, None]
+    
     accumulator = accumulator.to(compute_type)
     # C.shape(topk, M, N)
     offs_cn = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N).to(tl.int64)
@@ -90,16 +99,18 @@ def fused_moe_triton_kernel(
 
 
 def invoke_fused_moe_triton_kernel(
-    A: torch.Tensor,                # (M, K)
-    B: torch.Tensor,                # (E, K, N)
-    C: torch.Tensor,                # (topk * M, N)
-    topk_weights: torch.Tensor,     # (M, topk)
+    A: torch.Tensor,                        # (M, K)
+    B: torch.Tensor,                        # (E, K, N)
+    C: torch.Tensor,                        # (topk * M, N)
+    topk_weights: torch.Tensor | None,      # (M, topk)
     sorted_token_ids: torch.Tensor | None,
     expert_ids: torch.Tensor | None,
     num_tokens_post_pad: torch.Tensor,
+    mul_routed_weight: bool,
     topk: int,
     block_size: int,
 ):
+    assert topk_weights is not None or not mul_routed_weight, "topk_weights must be provided if mul_routed_weight is True"
     if sorted_token_ids is None or expert_ids is None:
         raise ValueError("sorted_token_ids and expert_ids must be provided")
 
@@ -145,6 +156,7 @@ def invoke_fused_moe_triton_kernel(
         BLOCK_SIZE_N=BLOCK_SIZE_N,
         BLOCK_SIZE_K=BLOCK_SIZE_K,
         GROUP_SIZE_M=4,
+        MUL_ROUTED_WEIGHT=mul_routed_weight,
         topk=topk,
         compute_type=compute_type,
     )
@@ -252,6 +264,7 @@ class TritonExperts(mk.FusedMoEPermuteExpertsUnpermute):
         """
         assert hidden_states.is_contiguous(), "Hidden_states must be contiguous"
         assert hidden_states.dim() == 2
+        assert topk_weights.is_contiguous(), "topk_weights must be contiguous"
         assert w1.stride(-1) == 1, "Stride of last dimension must be 1"
         assert w2.stride(-1) == 1, "Stride of last dimension must be 1"
 
@@ -285,10 +298,11 @@ class TritonExperts(mk.FusedMoEPermuteExpertsUnpermute):
             A=hidden_states,
             B=w1,
             C=gate_up,
-            topk_weights=topk_weights,
+            topk_weights=None,
             sorted_token_ids=sorted_token_ids,
             expert_ids=expert_ids,
             num_tokens_post_pad=num_tokens_post_pad,
+            mul_routed_weight=False,
             topk=top_k_num,
             block_size=self.BLOCK_SIZE,
         )
@@ -302,20 +316,24 @@ class TritonExperts(mk.FusedMoEPermuteExpertsUnpermute):
             device=hidden_states.device,
             dtype=hidden_states.dtype,
         )
-        
-        flat_topk_ids = topk_ids.reshape(-1)
-        for expert_id in range(num_experts):
-            slot_mask = flat_topk_ids == expert_id
-            if slot_mask.any():
-                expert_out[slot_mask] = activated[slot_mask] @ w2[expert_id]
+    
+        # C = A @ B --> (M * topk, N) @ (E, N, K) -> (M * topk, K)
+        invoke_fused_moe_triton_kernel(
+            A=activated,
+            B=w2,
+            C=expert_out,
+            topk_weights=topk_weights,
+            sorted_token_ids=sorted_token_ids,
+            expert_ids=expert_ids,
+            num_tokens_post_pad=num_tokens_post_pad,
+            mul_routed_weight=True,
+            topk=1,
+            block_size=self.BLOCK_SIZE,
+        )
         
         
         output.copy_(
-            (
-                expert_out.view(num_tokens, top_k_num, hidden_size)
-                * topk_weights.to(expert_out.dtype).unsqueeze(-1)
-            ).sum(dim=1)
+            expert_out.view(num_tokens, top_k_num, hidden_size).sum(dim=1)
         )
         return output
         
-
