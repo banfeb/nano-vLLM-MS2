@@ -14,7 +14,7 @@ class RMSNorm(nn.Module):
         self.weight = nn.Parameter(torch.ones(hidden_size))
 
     @torch.compile
-    def rms_forward(
+    def _rms_forward_2d(
         self,
         x: torch.Tensor,
     ) -> torch.Tensor:
@@ -26,7 +26,7 @@ class RMSNorm(nn.Module):
         return x
 
     @torch.compile
-    def add_rms_forward(
+    def _add_rms_forward_2d(
         self,
         x: torch.Tensor,
         residual: torch.Tensor,
@@ -38,6 +38,28 @@ class RMSNorm(nn.Module):
         x.mul_(torch.rsqrt(var + self.eps))
         x = x.to(orig_dtype).mul_(self.weight)
         return x, residual
+
+    def rms_forward(
+        self,
+        x: torch.Tensor,
+    ) -> torch.Tensor:
+        """传入x可能为2d或者3d, 在这个接口统一reshape为2d, 避免调用@torch.compile是重复编译"""
+        input_shape = x.shape
+        x = x.reshape(-1, input_shape[-1])
+        x = self._rms_forward_2d(x)
+        return x.reshape(input_shape)
+
+    def add_rms_forward(
+        self,
+        x: torch.Tensor,
+        residual: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """传入x和residual可能为2d或者3d, 在这个接口统一reshape为2d, 避免调用@torch.compile是重复编译"""
+        input_shape = x.shape
+        x = x.reshape(-1, input_shape[-1])
+        residual = residual.reshape(-1, input_shape[-1])
+        x, residual = self._add_rms_forward_2d(x, residual)
+        return x.reshape(input_shape), residual.reshape(input_shape)
 
     def forward(
         self,
