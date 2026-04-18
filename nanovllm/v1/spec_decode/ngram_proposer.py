@@ -19,14 +19,21 @@ class NgramProposer:
         self.max_model_len = max_model_len
         self.valid_ngram_draft = np.zeros((max_num_seqs, self.k), dtype=np.int32)
         self.valid_ngram_num_drafts = np.zeros((max_num_seqs), dtype=np.int32)
-        # 决定是否启用多线程的参数
+        # 决定是否启用多线程的参数(如果有tp需要重新考虑)
+        # TODO: 之后完成spec_decode的tp并行后的线程参数调整
         self.num_tokens_threshold = 8192
         cpu_count = os.cpu_count()
         if cpu_count:
-            self.num_numba_thread_available = min(1, cpu_count // 2)
+            self.num_numba_thread_available = min(8, cpu_count // 2)
         else:
             self.num_numba_thread_available = 1
-    
+
+        self.propose(
+            [[]] * 1024,
+            np.zeros((1024,), dtype=np.int32),
+            np.zeros((1024, max_model_len), dtype=np.int32),
+        )
+        
     def propose(
         self, 
         sampled_token_ids: list[list[int]],
