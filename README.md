@@ -25,19 +25,19 @@ pip install git+https://github.com/banfeb/nano-vLLM-MS2.git
 
 To download the model weights manually, use the following command:
 ```bash
-huggingface-cli download --resume-download Qwen/Qwen3-0.6B \
-  --local-dir ~/huggingface/Qwen3-0.6B/ \
+huggingface-cli download --resume-download yujiepan/qwen3-moe-tiny-random \
+  --local-dir ~/huggingface/qwen3-moe-tiny-random/ \
   --local-dir-use-symlinks False
 ```
 
 ## Quick Start
 
-See `example.py` for usage. The API mirrors vLLM's interface with minor differences in the `LLM.generate` method:
+See `example_moe.py` for usage. The API mirrors vLLM's interface with minor differences in the `LLM.generate` method:
 ```python
 from nanovllm import LLM, SamplingParams
 llm = LLM("/YOUR/MODEL/PATH", enforce_eager=True, tensor_parallel_size=1)
 sampling_params = SamplingParams(temperature=0.6, max_tokens=256)
-prompts = ["Hello, Nano-vLLM."]
+prompts = ["Hello, Nano-vLLM-MS."]
 outputs = llm.generate(prompts, sampling_params)
 outputs[0]["text"]
 ```
