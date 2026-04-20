@@ -11,7 +11,7 @@ def main():
         enforce_eager=True, 
         tensor_parallel_size=1,
         speculative_config={
-            "method": "ngram1",
+            "method": "ngram",
             "num_speculative_tokens": 2,
             "prompt_lookup_max": 2,
         }

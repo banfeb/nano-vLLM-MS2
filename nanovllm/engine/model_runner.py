@@ -1,6 +1,7 @@
 import pickle
 import torch
 import torch.distributed as dist
+import numpy as np
 from multiprocessing.synchronize import Event
 from multiprocessing.shared_memory import SharedMemory
 
@@ -10,19 +11,29 @@ from nanovllm.models.qwen3 import Qwen3ForCausalLM
 from nanovllm.layers.sampler import Sampler
 from nanovllm.utils.context import set_context, get_context, reset_context
 from nanovllm.utils.loader import load_model, load_model_arch_from_config
-
+from nanovllm.v1.spec_decode.ngram_proposer import NgramProposer
 
 class ModelRunner:
 
     def __init__(self, config: Config, rank: int, event: Event | list[Event]):
         self.config = config
+        self.speculative_config = self.config.speculative_config
         hf_config = config.hf_config
         self.block_size = config.kvcache_block_size
         self.enforce_eager = config.enforce_eager
         self.world_size = config.tensor_parallel_size
         self.rank = rank
         self.event = event
-
+        # spec_decoding
+        if self.speculative_config:
+            if self.speculative_config.method == "ngram":
+                self.drafter = NgramProposer(
+                    prompt_lookup_min=self.speculative_config.prompt_lookup_min,
+                    prompt_lookup_max=self.speculative_config.prompt_lookup_max,
+                    num_speculative_tokens=self.speculative_config.num_speculative_tokens,
+                    max_model_len=config.max_model_len,
+                    max_num_seqs=config.max_num_seqs
+                )
         dist.init_process_group("nccl", "tcp://localhost:2333", world_size=self.world_size, rank=rank)
         torch.cuda.set_device(rank)
         default_dtype = torch.get_default_dtype()
@@ -187,6 +198,17 @@ class ModelRunner:
         temperatures = torch.tensor(temperatures, dtype=torch.float32, pin_memory=True).cuda(non_blocking=True)
         return temperatures
 
+    def propose_draft_token_ids(
+        self,
+        sampled_token_ids: torch.Tensor | list[list[int]],
+    ):
+        spec_config = self.speculative_config
+        if spec_config.method == "ngram":
+            assert isinstance(self.drafter, NgramProposer)
+            draft_token_ids = self.drafter.propose(
+                
+            )
+    
     @torch.inference_mode()
     def run_model(self, input_ids: torch.Tensor, positions: torch.Tensor, is_prefill: bool):
         if is_prefill or self.enforce_eager or input_ids.size(0) > 512:
