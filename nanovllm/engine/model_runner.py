@@ -12,6 +12,8 @@ from nanovllm.layers.sampler import Sampler
 from nanovllm.utils.context import set_context, get_context, reset_context
 from nanovllm.utils.loader import load_model, load_model_arch_from_config
 from nanovllm.v1.spec_decode.ngram_proposer import NgramProposer
+from nanovllm.v1.sample.rejection_sampler import RejectionSampler
+
 
 class ModelRunner:
 
@@ -24,6 +26,15 @@ class ModelRunner:
         self.world_size = config.tensor_parallel_size
         self.rank = rank
         self.event = event
+        dist.init_process_group("nccl", "tcp://localhost:2333", world_size=self.world_size, rank=rank)
+        torch.cuda.set_device(rank)
+        default_dtype = torch.get_default_dtype()
+        torch.set_default_dtype(hf_config.dtype)
+        torch.set_default_device("cuda")
+        model_cls = load_model_arch_from_config(hf_config)
+        self.model = model_cls(hf_config)
+        load_model(self.model, config.model)
+        self.sampler = Sampler()
         # spec_decoding
         if self.speculative_config:
             if self.speculative_config.method == "ngram":
@@ -34,15 +45,7 @@ class ModelRunner:
                     max_model_len=config.max_model_len,
                     max_num_seqs=config.max_num_seqs
                 )
-        dist.init_process_group("nccl", "tcp://localhost:2333", world_size=self.world_size, rank=rank)
-        torch.cuda.set_device(rank)
-        default_dtype = torch.get_default_dtype()
-        torch.set_default_dtype(hf_config.dtype)
-        torch.set_default_device("cuda")
-        model_cls = load_model_arch_from_config(hf_config)
-        self.model = model_cls(hf_config)
-        load_model(self.model, config.model)
-        self.sampler = Sampler()
+            self.rejection_sampler = RejectionSampler(self.sampler)
         self.warmup_model()
         self.allocate_kv_cache()
         if not self.enforce_eager:
@@ -200,14 +203,69 @@ class ModelRunner:
 
     def propose_draft_token_ids(
         self,
-        sampled_token_ids: torch.Tensor | list[list[int]],
-    ):
+        seqs: list[Sequence],
+        sampled_token_ids: list[int],
+    ) -> list[list[int]]:
+        sampled_token_ids = [[token_id] for token_id in sampled_token_ids]
+        num_tokens_no_spec = np.array([len(seq) + 1 for seq in seqs], dtype=np.int32)
+        token_ids_cpu = np.zeros((len(seqs), self.config.max_model_len), dtype=np.int32)
+        for i, seq in enumerate(seqs):
+            token_ids_cpu[i, :len(seq.token_ids)] = seq.token_ids
+            token_ids_cpu[i, len(seq.token_ids)] = sampled_token_ids[i][0]
         spec_config = self.speculative_config
         if spec_config.method == "ngram":
             assert isinstance(self.drafter, NgramProposer)
             draft_token_ids = self.drafter.propose(
-                
+                sampled_token_ids=sampled_token_ids,
+                num_tokens_no_spec=num_tokens_no_spec,
+                token_ids_cpu=token_ids_cpu,
             )
+        return draft_token_ids
+
+    def prepare_spec_decode(
+        self,
+        seqs: list[Sequence],
+        sampled_token_ids: list[int],
+    ) -> dict[str, list[list[int]] | list[int]]:
+        draft_token_ids = self.propose_draft_token_ids(seqs, sampled_token_ids)
+        return {
+            "sampled_token_ids": [[token_id] for token_id in sampled_token_ids],
+            "draft_token_ids": draft_token_ids,
+        }
+
+    def verify_draft_token_ids(
+        self,
+        seqs: list[Sequence],
+        sampled_token_ids: list[int],
+        draft_token_ids: list[list[int]],
+        temperatures: torch.Tensor,
+    ) -> list[int]:
+        # Keep the outer runner/scheduler contract unchanged for now:
+        # speculative verification will later return multiple tokens per request.
+        del seqs, temperatures
+        if not draft_token_ids or not any(draft_token_ids):
+            return sampled_token_ids
+        return sampled_token_ids
+
+    def run_spec_decode(self, seqs: list[Sequence]) -> list[int] | None:
+        input_ids, positions = self.prepare_decode(seqs)
+        temperatures = self.prepare_sample(seqs) if self.rank == 0 else None
+        logits = self.run_model(input_ids, positions, False)
+
+        if self.rank != 0:
+            reset_context()
+            return None
+
+        sampled_token_ids = self.sampler(logits, temperatures).tolist()
+        spec_decode_inputs = self.prepare_spec_decode(seqs, sampled_token_ids)
+        verified_token_ids = self.verify_draft_token_ids(
+            seqs=seqs,
+            sampled_token_ids=sampled_token_ids,
+            draft_token_ids=spec_decode_inputs["draft_token_ids"],
+            temperatures=temperatures,
+        )
+        reset_context()
+        return verified_token_ids
     
     @torch.inference_mode()
     def run_model(self, input_ids: torch.Tensor, positions: torch.Tensor, is_prefill: bool):
@@ -229,6 +287,9 @@ class ModelRunner:
             return self.model.compute_logits(graph_vars["outputs"][:bs])
 
     def run(self, seqs: list[Sequence], is_prefill: bool) -> list[int]:
+        if not is_prefill and self.speculative_config:
+            return self.run_spec_decode(seqs)
+
         input_ids, positions = self.prepare_prefill(seqs) if is_prefill else self.prepare_decode(seqs)
         temperatures = self.prepare_sample(seqs) if self.rank == 0 else None
         logits = self.run_model(input_ids, positions, is_prefill)

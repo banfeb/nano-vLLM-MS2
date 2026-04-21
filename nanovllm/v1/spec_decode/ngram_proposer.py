@@ -176,15 +176,8 @@ def _find_longest_matched_ngram_and_propose_tokens(
     while i < total_token:
         # tokens[:prev_lps] is the longest prefix as a suffix of tokens[:i]
         if tokens[prev_lps] == tokens[i]:
-            # Token match: tokens[:prev_lps+1] is the longest prefix as
-            # a suffix of tokens[:i+1]
+
             prev_lps += 1
-            # Check if we found a longer valid ngram.
-            #
-            # Update position when longest_ngram matched prev_lps,
-            # as we want to get the target n-gram of the earliest position
-            # in the original tokens (i.e.
-            # latest position in the reversed tokens)
             if prev_lps >= longest_ngram:
                 longest_ngram = prev_lps
                 position = i
@@ -192,29 +185,17 @@ def _find_longest_matched_ngram_and_propose_tokens(
                 # Store LPS for the first max_ngram prefix
                 lps[i] = prev_lps
             if prev_lps == max_ngram:
-                # When prev_lps reached max_ngram, update prev_lps
-                # to lps[max_ngram-1] to avoid matching ngram
-                # longer than max_ngram
                 prev_lps = lps[max_ngram - 1]
             i += 1
         elif prev_lps != 0:
-            # Token mismatch: try the second-longest prefix
-            # among all suffix of tokens[:i],
-            # which is the longest prefix of tokens[:prev_lps]
             prev_lps = lps[prev_lps - 1]
         else:
-            # Token mismatch, and no more prefix (except empty string)
-            # as a suffix of tokens[:i]
             i += 1
 
     if longest_ngram < min_ngram:
         # No valid ngram is found
         return np.empty((0,), dtype=origin_tokens.dtype)
 
-    # Flip the position back, so in origin_tokens,
-    # origin_tokens[total_token-1-position:total_token-1-position+longest_ngram]
-    # is the matched ngram, so we should start drafting tokens from
-    # total_token-1-position+longest_ngram
     start_position = total_token - 1 - position + longest_ngram
     k = min(k, total_token - start_position)
     return origin_tokens[start_position : start_position + k]
