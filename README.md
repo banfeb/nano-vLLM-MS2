@@ -57,7 +57,7 @@ See `bench.py` for benchmark.
 | Inference Engine | Output Tokens | Time (s) | Throughput (tokens/s) |
 |----------------|-------------|----------|-----------------------|
 | vLLM           | 133,966     |  5.53    |  24242.19                |
-| Nano-vLLM-MS      | 133,966     | 6.37    |  22676.22               |
+| Nano-vLLM-MS      | 133,966     | 6.37    |  23214.07              |
 
 ## Star History
 
