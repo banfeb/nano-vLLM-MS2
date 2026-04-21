@@ -70,6 +70,12 @@ class Sequence:
         self.token_ids.append(token_id)
         self.last_token = token_id
         self.num_tokens += 1
+        
+    def append_tokens(self, token_ids: list[int] | int):
+        if isinstance(token_ids, int):
+            token_ids = [token_ids]
+        for token_id in token_ids:
+            self.append_token(token_id)
 
     def __getstate__(self):
         return (self.num_tokens, self.num_prompt_tokens, self.num_cached_tokens, self.block_table,
