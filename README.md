@@ -11,9 +11,12 @@ nano-vllm基础上完成:
 
 ## Key Features
 
-* 🚀 **Fast offline inference** - Comparable inference speeds to vLLM
-* 📖 **Readable codebase** - Clean implementation in ~ 1,200 lines of Python code
-* ⚡ **Optimization Suite** - Prefix caching, Tensor Parallelism, Torch compilation, CUDA graph, etc.
+* ✅ **MoE model support** - End-to-end support for MoE models in the nano-vLLM pipeline.
+* ✅ **Speculative Decoding (N-gram draft + rejection sampling)** - Decode path now supports N-gram drafting, verify pass, and scheduler post-processing for accepted tokens.
+* ✅ **Optional speculative config** - `speculative_config` is optional; regular decode path still works when it is not provided.
+* ✅ **N-gram proposer threading control** - 已加入“决定是否启用多线程”的门限参数（当前策略在 `tp=1` 场景下可用）。
+* ⚠️ **Spec Decode TP TODO** - 如果有 TP 需要重新考虑线程参数；TODO: 之后完成 `spec_decode` 的 TP 并行后，重新调整线程参数策略。
+* ⚡ **Optimization suite** - Prefix caching, Tensor Parallelism, Torch compilation, CUDA graph, etc.
 
 ## Installation
 
