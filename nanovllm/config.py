@@ -1,5 +1,5 @@
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from transformers import AutoConfig
 from typing import Any
 
@@ -36,7 +36,7 @@ class Config:
     eos: int = -1
     kvcache_block_size: int = 256
     num_kvcache_blocks: int = -1
-    speculative_config: dict[str, Any] = field(default_factory=dict)
+    speculative_config: dict[str, Any] | None = None
 
     def __post_init__(self):
         assert os.path.isdir(self.model)
