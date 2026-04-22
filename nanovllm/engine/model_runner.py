@@ -204,71 +204,133 @@ class ModelRunner:
     def propose_draft_token_ids(
         self,
         seqs: list[Sequence],
-        sampled_token_ids: list[int],
     ) -> list[list[int]]:
-        sampled_token_ids = [[token_id] for token_id in sampled_token_ids]
-        num_tokens_no_spec = np.array([len(seq) + 1 for seq in seqs], dtype=np.int32)
-        token_ids_cpu = np.zeros((len(seqs), self.config.max_model_len), dtype=np.int32)
+        num_seqs = len(seqs)
+        max_model_len = self.config.max_model_len
+        num_tokens_no_spec = np.empty((num_seqs,), dtype=np.int32)
+        token_ids_cpu = np.zeros((num_seqs, max_model_len), dtype=np.int32)
         for i, seq in enumerate(seqs):
-            token_ids_cpu[i, :len(seq.token_ids)] = seq.token_ids
-            token_ids_cpu[i, len(seq.token_ids)] = sampled_token_ids[i][0]
+            seq_len = min(len(seq), max_model_len)
+            num_tokens_no_spec[i] = seq_len
+            if seq_len > 0:
+                token_ids_cpu[i, :seq_len] = np.asarray(seq.token_ids[:seq_len], dtype=np.int32)
+
         spec_config = self.speculative_config
         if spec_config.method == "ngram":
             assert isinstance(self.drafter, NgramProposer)
             draft_token_ids = self.drafter.propose(
-                sampled_token_ids=sampled_token_ids,
                 num_tokens_no_spec=num_tokens_no_spec,
                 token_ids_cpu=token_ids_cpu,
             )
+        else:
+            raise ValueError(f"Unsupported speculative decoding method: {spec_config.method}")
         return draft_token_ids
 
     def prepare_spec_decode(
         self,
         seqs: list[Sequence],
-        sampled_token_ids: list[int],
-    ) -> dict[str, list[list[int]] | list[int]]:
-        draft_token_ids = self.propose_draft_token_ids(seqs, sampled_token_ids)
-        return {
-            "sampled_token_ids": [[token_id] for token_id in sampled_token_ids],
-            "draft_token_ids": draft_token_ids,
-        }
+        draft_token_ids: list[list[int]],
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        input_ids: list[int] = []
+        positions: list[int] = []
+        draft_row_indices: list[int] = []
+        bonus_row_indices: list[int] = []
+        cu_seqlens = [0]
+        max_seqlen = 0
+        offset = 0
+        for seq, seq_draft_token_ids in zip(seqs, draft_token_ids):
+            seq_token_ids = seq.token_ids + seq_draft_token_ids
+            seq_len = len(seq_token_ids)
+            num_drafts = len(seq_draft_token_ids)
+            input_ids.extend(seq_token_ids)
+            positions.extend(range(seq_len))
+            cu_seqlens.append(cu_seqlens[-1] + seq_len)
+            max_seqlen = max(max_seqlen, seq_len)
+            if num_drafts > 0:
+                draft_row_indices.extend(
+                    range(offset + len(seq) - 1, offset + len(seq) - 1 + num_drafts)
+                )
+            bonus_row_indices.append(offset + seq_len - 1)
+            offset += seq_len
+
+        input_ids_tensor = torch.tensor(input_ids, dtype=torch.int64, pin_memory=True).cuda(non_blocking=True)
+        positions_tensor = torch.tensor(positions, dtype=torch.int64, pin_memory=True).cuda(non_blocking=True)
+        verify_row_indices = torch.tensor(
+            draft_row_indices + bonus_row_indices,
+            dtype=torch.int64,
+            pin_memory=True,
+        ).cuda(non_blocking=True)
+        cu_seqlens_tensor = torch.tensor(cu_seqlens, dtype=torch.int32, pin_memory=True).cuda(non_blocking=True)
+        slot_mapping = torch.full((len(input_ids),), -1, dtype=torch.int32, device=input_ids_tensor.device)
+        set_context(
+            True,
+            cu_seqlens_q=cu_seqlens_tensor,
+            cu_seqlens_k=cu_seqlens_tensor,
+            max_seqlen_q=max_seqlen,
+            max_seqlen_k=max_seqlen,
+            slot_mapping=slot_mapping,
+            block_tables=None,
+        )
+        return input_ids_tensor, positions_tensor, verify_row_indices
 
     def verify_draft_token_ids(
         self,
-        seqs: list[Sequence],
-        sampled_token_ids: list[int],
         draft_token_ids: list[list[int]],
-        temperatures: torch.Tensor,
-    ) -> list[int]:
-        # Keep the outer runner/scheduler contract unchanged for now:
-        # speculative verification will later return multiple tokens per request.
-        del seqs, temperatures
-        if not draft_token_ids or not any(draft_token_ids):
-            return sampled_token_ids
-        return sampled_token_ids
-
-    def run_spec_decode(self, seqs: list[Sequence]) -> list[int] | None:
-        input_ids, positions = self.prepare_decode(seqs)
-        temperatures = self.prepare_sample(seqs) if self.rank == 0 else None
-        logits = self.run_model(input_ids, positions, False)
-
+        verify_logits: torch.Tensor,
+        temperatures: torch.Tensor | None,
+    ) -> list[list[int]] | None:
         if self.rank != 0:
-            reset_context()
             return None
 
-        sampled_token_ids = self.sampler(logits, temperatures).tolist()
-        spec_decode_inputs = self.prepare_spec_decode(seqs, sampled_token_ids)
+        assert temperatures is not None
+        expected_rows = sum(len(x) for x in draft_token_ids) + len(draft_token_ids)
+        if verify_logits.ndim != 2 or verify_logits.size(0) != expected_rows:
+            raise ValueError(
+                f"verify_logits must have shape [{expected_rows}, vocab_size], "
+                f"got {tuple(verify_logits.shape)}"
+            )
+        sampled_verify_token_ids = self.rejection_sampler(
+            draft_token_ids=draft_token_ids,
+            logits=verify_logits,
+            temperatures=temperatures,
+        )
+        return sampled_verify_token_ids
+
+
+    def run_spec_decode(self, seqs: list[Sequence]) -> list[list[int]] | None:
+        temperatures = self.prepare_sample(seqs) if self.rank == 0 else None
+        draft_token_ids = self.propose_draft_token_ids(seqs)
+        input_ids, positions, verify_row_indices = self.prepare_spec_decode(seqs, draft_token_ids)
+        
+        verify_logits = self.run_model(
+            input_ids,
+            positions,
+            is_prefill=True,
+            is_spec_verify=True,
+            spec_row_indices=verify_row_indices,
+        )
         verified_token_ids = self.verify_draft_token_ids(
-            seqs=seqs,
-            sampled_token_ids=sampled_token_ids,
-            draft_token_ids=spec_decode_inputs["draft_token_ids"],
+            draft_token_ids=draft_token_ids,
+            verify_logits=verify_logits,
             temperatures=temperatures,
         )
         reset_context()
         return verified_token_ids
     
     @torch.inference_mode()
-    def run_model(self, input_ids: torch.Tensor, positions: torch.Tensor, is_prefill: bool):
+    def run_model(
+        self,
+        input_ids: torch.Tensor,
+        positions: torch.Tensor,
+        is_prefill: bool,
+        is_spec_verify: bool = False,
+        spec_row_indices: torch.Tensor | None = None,
+    ):
+        if is_prefill and is_spec_verify:
+            hidden_states = self.model(input_ids, positions)
+            if spec_row_indices is not None:
+                hidden_states = hidden_states.index_select(0, spec_row_indices)
+            return self.model.lm_head(hidden_states, return_all_logits=True)
         if is_prefill or self.enforce_eager or input_ids.size(0) > 512:
             return self.model.compute_logits(self.model(input_ids, positions))
         else:
@@ -286,7 +348,7 @@ class ModelRunner:
             graph.replay()
             return self.model.compute_logits(graph_vars["outputs"][:bs])
 
-    def run(self, seqs: list[Sequence], is_prefill: bool) -> list[int]:
+    def run(self, seqs: list[Sequence], is_prefill: bool) -> list[int] | list[list[int]]:
         if not is_prefill and self.speculative_config:
             return self.run_spec_decode(seqs)
 

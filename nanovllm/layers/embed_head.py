@@ -53,9 +53,9 @@ class ParallelLMHead(VocabParallelEmbedding):
         assert not bias
         super().__init__(num_embeddings, embedding_dim)
 
-    def forward(self, x: torch.Tensor):
+    def forward(self, x: torch.Tensor, return_all_logits: bool = False):
         context = get_context()
-        if context.is_prefill:
+        if context.is_prefill and not return_all_logits:
             last_indices = context.cu_seqlens_q[1:] - 1
             x = x[last_indices].contiguous()
         logits = F.linear(x, self.weight)

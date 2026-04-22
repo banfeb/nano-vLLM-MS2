@@ -86,11 +86,12 @@ class Scheduler:
                     break
 
     def postprocess(self, seqs: list[Sequence], token_ids: list[int] | list[list[int]]) -> None:
-        if self.is_spec_decoding:
+        if self.is_spec_decoding and not isinstance(token_ids[0], int):
             self.postprocess_spec_decode(seqs, token_ids)
+            return
         for seq, token_id in zip(seqs, token_ids):
                 seq.append_token(token_id)
-                if (not seq.ignore_eos and token_id == self.eos) or seq.num_completion_tokens == seq.max_tokens:
+                if (not seq.ignore_eos and token_id == self.eos) or seq.num_completion_tokens >= seq.max_tokens:
                     seq.status = SequenceStatus.FINISHED
                     self.block_manager.deallocate(seq)
                     self.running.remove(seq)

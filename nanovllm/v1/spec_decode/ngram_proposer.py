@@ -29,29 +29,33 @@ class NgramProposer:
             self.num_numba_thread_available = 1
 
         self.propose(
-            [[]] * 1024,
             np.zeros((1024,), dtype=np.int32),
             np.zeros((1024, max_model_len), dtype=np.int32),
         )
         
     def propose(
         self, 
-        sampled_token_ids: list[list[int]],
         num_tokens_no_spec: np.ndarray,
         token_ids_cpu: np.ndarray,
     ) -> list[list[int]]:
+        # num_tokens_no_spec: (batch_size) 每个请求不包含speculative tokens的token数
+        # token_ids_cpu: (batch_size, max_model_len)
+        num_requests = int(num_tokens_no_spec.shape[0])
+        if token_ids_cpu.shape[0] != num_requests:
+            raise ValueError(
+                "token_ids_cpu batch size must match num_tokens_no_spec, "
+                f"got {token_ids_cpu.shape[0]} and {num_requests}."
+            )
         valid_ngram_requests = []
-        for i, sampled_ids in enumerate(sampled_token_ids):
-            num_sampled_ids = len(sampled_ids)
-            # 当request没有采样时，不进行speculative decoding
-            if not num_sampled_ids:
+        for i, num_tokens in enumerate(num_tokens_no_spec):
+            # 空上下文或超长上下文都不做 speculative drafting
+            if num_tokens <= 0:
                 continue
-            num_tokens = num_tokens_no_spec[i]
             if num_tokens >= self.max_model_len:
                 continue
             valid_ngram_requests.append(i)
         draft_token_ids = self.batch_propose(
-            len(sampled_token_ids),
+            num_requests,
             valid_ngram_requests,
             num_tokens_no_spec,
             token_ids_cpu,
@@ -66,6 +70,7 @@ class NgramProposer:
         token_ids_cpu: np.ndarray,
     ) -> list[list[int]]:
         draft_token_ids: list[list[int]] = []
+        valid_ngram_request_set = set(valid_ngram_requests)
 
         if num_ngram_requests := len(valid_ngram_requests):
             original_num_numba_threads = get_num_threads()
@@ -94,7 +99,7 @@ class NgramProposer:
             set_num_threads(original_num_numba_threads)
 
         for i in range(num_requests):
-            if i in valid_ngram_requests and self.valid_ngram_num_drafts[i] > 0:
+            if i in valid_ngram_request_set and self.valid_ngram_num_drafts[i] > 0:
                 draft_token_ids.append(
                     self.valid_ngram_draft[i, : self.valid_ngram_num_drafts[i]].tolist()
                 )
@@ -103,8 +108,6 @@ class NgramProposer:
 
         return draft_token_ids
     
-    def load_model(self, *args, **kwargs):
-        pass
     
     
 @njit(parallel=True)
@@ -138,43 +141,24 @@ def _find_longest_matched_ngram_and_propose_tokens(
     max_model_len: int,
     k: int,
 ) -> np.ndarray:
-    """
-    Find the longest n-gram which matches the suffix of the given tokens
-    whose length is within [min_ngram, max_ngram] (inclusive).
-
-    If found, we will extract k right after the matched ngram.
-    """
-    # Do not generate draft tokens is context is shorter than minimum n-gram
     total_token = origin_tokens.shape[0]
     if total_token < min_ngram:
         return np.empty((0,), dtype=origin_tokens.dtype)
 
-    # Do not generate draft tokens beyond the max model length.
     k = min(k, max_model_len - total_token)
     if k <= 0:
         return np.empty((0,), dtype=origin_tokens.dtype)
 
-    # Flip tokens, and the goal become to find longest ngram
-    # on the rightmost position which matches the prefix with
-    # length [min_n, max_n] (inclusive).
     tokens = origin_tokens[::-1]
 
-    # Longest prefix (not including itself) which is a suffix of
-    # the current position.
-    #   lps[i] = max{v, where tokens[0:v] == tokens[i+1-v:i+1]}
-    #
-    # As ngram is capped by max_ngram to save memory, we only need to
-    # store lps for the first max_ngram prefix.
     lps = np.zeros(max_ngram, dtype=np.int32)
 
     longest_ngram = 0
     position = 0
 
-    # lps[0] always equal to 0, we start with index 1
     prev_lps = 0
     i = 1
     while i < total_token:
-        # tokens[:prev_lps] is the longest prefix as a suffix of tokens[:i]
         if tokens[prev_lps] == tokens[i]:
 
             prev_lps += 1
@@ -182,7 +166,6 @@ def _find_longest_matched_ngram_and_propose_tokens(
                 longest_ngram = prev_lps
                 position = i
             if i < max_ngram:
-                # Store LPS for the first max_ngram prefix
                 lps[i] = prev_lps
             if prev_lps == max_ngram:
                 prev_lps = lps[max_ngram - 1]
@@ -193,7 +176,6 @@ def _find_longest_matched_ngram_and_propose_tokens(
             i += 1
 
     if longest_ngram < min_ngram:
-        # No valid ngram is found
         return np.empty((0,), dtype=origin_tokens.dtype)
 
     start_position = total_token - 1 - position + longest_ngram

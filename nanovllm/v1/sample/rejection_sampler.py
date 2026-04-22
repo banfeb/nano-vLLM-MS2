@@ -19,9 +19,11 @@ def _sample_recovered_tokens_kernel(
     PADDED_VOCAB_SIZE: tl.constexpr,
     NO_DRAFT_PROBS: tl.constexpr,
 ):
-    req_idx = tl.program_id(0)
-    start_idx = 0 if req_idx == 0 else tl.load(cu_num_draft_tokens_ptr + req_idx - 1)
-    end_idx = tl.load(cu_num_draft_tokens_ptr + req_idx)
+    req_idx = tl.program_id(0).to(tl.int32)
+    start_idx = tl.zeros((), dtype=tl.int32)
+    if req_idx > 0:
+        start_idx = tl.load(cu_num_draft_tokens_ptr + req_idx - 1).to(tl.int32)
+    end_idx = tl.load(cu_num_draft_tokens_ptr + req_idx).to(tl.int32)
     num_draft_tokens = end_idx - start_idx
 
     pos = tl.program_id(1)
@@ -73,9 +75,11 @@ def _rejection_random_sample_kernel(
     vocab_size,
     NO_DRAFT_PROBS: tl.constexpr,
 ):
-    req_idx = tl.program_id(0)
-    start_idx = 0 if req_idx == 0 else tl.load(cu_num_draft_tokens_ptr + req_idx - 1)
-    end_idx = tl.load(cu_num_draft_tokens_ptr + req_idx)
+    req_idx = tl.program_id(0).to(tl.int32)
+    start_idx = tl.zeros((), dtype=tl.int32)
+    if req_idx > 0:
+        start_idx = tl.load(cu_num_draft_tokens_ptr + req_idx - 1).to(tl.int32)
+    end_idx = tl.load(cu_num_draft_tokens_ptr + req_idx).to(tl.int32)
     num_draft_tokens = end_idx - start_idx
 
     rejected = False
