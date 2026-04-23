@@ -63,39 +63,70 @@ class Scheduler:
         self.block_manager.deallocate(seq)
         self.waiting.appendleft(seq)
 
+    def reserve_spec_decode(
+        self,
+        seqs: list[Sequence],
+        draft_token_ids: list[list[int]],
+    ) -> tuple[list[list[int]], list[dict[str, list[int] | int]]]:
+        reserved_draft_token_ids: list[list[int]] = []
+        reservations: list[dict[str, list[int] | int]] = []
+        for seq, seq_draft_token_ids in zip(seqs, draft_token_ids):
+            max_num_appendable_tokens = self.block_manager.get_num_appendable_tokens(seq)
+            reserved_num_draft_tokens = min(len(seq_draft_token_ids), max_num_appendable_tokens)
+            seq_draft_token_ids = seq_draft_token_ids[:reserved_num_draft_tokens]
+            new_block_ids = self.block_manager.reserve_spec_append(seq, reserved_num_draft_tokens)
+            reserved_draft_token_ids.append(seq_draft_token_ids)
+            reservations.append({
+                "draft_len": reserved_num_draft_tokens,
+                "new_block_ids": new_block_ids,
+            })
+        return reserved_draft_token_ids, reservations
+
     def postprocess_spec_decode(
         self,
         seqs: list[Sequence],
         token_ids: list[list[int]],
+        draft_token_ids: list[list[int]],
+        reservations: list[dict[str, list[int] | int]],
     ) -> int:
         num_tokens: int = 0
-        for seq, seq_token_ids in zip(seqs, token_ids):
+        for seq, seq_token_ids, seq_draft_token_ids, reservation in zip(seqs, token_ids, draft_token_ids, reservations):
+            old_len = len(seq)
+            accepted_draft_tokens = 0
+            for draft_token_id, token_id in zip(seq_draft_token_ids, seq_token_ids):
+                if draft_token_id != token_id:
+                    break
+                accepted_draft_tokens += 1
+
+            num_appended_accepted_drafts = 0
             for token_idx, token_id in enumerate(seq_token_ids):
                 num_tokens += 1
-                if token_idx > 0:
-                    if not self.block_manager.can_append(seq):
-                        raise RuntimeError(
-                            "Insufficient KV cache capacity while appending "
-                            "speculative decode tokens."
-                        )
-                    self.block_manager.may_append(seq)
-
                 seq.append_token(token_id)
-                if (not seq.ignore_eos and token_id == self.eos) or seq.num_completion_tokens == seq.max_tokens:
+                if token_idx < accepted_draft_tokens:
+                    num_appended_accepted_drafts += 1
+                if (not seq.ignore_eos and token_id == self.eos) or seq.num_completion_tokens >= seq.max_tokens:
                     seq.status = SequenceStatus.FINISHED
-                    self.block_manager.deallocate(seq)
-                    self.running.remove(seq)
                     break
+
+            num_computed_tokens = old_len + num_appended_accepted_drafts
+            self.block_manager.commit_spec_append(
+                seq,
+                reservation["new_block_ids"],
+                num_computed_tokens,
+            )
+            seq.num_computed_tokens = num_computed_tokens
+
+            if seq.is_finished:
+                self.block_manager.deallocate(seq)
+                self.running.remove(seq)
         return num_tokens
 
     def postprocess(self, seqs: list[Sequence], token_ids: list[int] | list[list[int]]) -> int:
-        if self.is_spec_decoding and not isinstance(token_ids[0], int):
-            return self.postprocess_spec_decode(seqs, token_ids)
-  
         for seq, token_id in zip(seqs, token_ids):
-                seq.append_token(token_id)
-                if (not seq.ignore_eos and token_id == self.eos) or seq.num_completion_tokens >= seq.max_tokens:
-                    seq.status = SequenceStatus.FINISHED
-                    self.block_manager.deallocate(seq)
-                    self.running.remove(seq)
+            seq.num_computed_tokens = len(seq)
+            seq.append_token(token_id)
+            if (not seq.ignore_eos and token_id == self.eos) or seq.num_completion_tokens >= seq.max_tokens:
+                seq.status = SequenceStatus.FINISHED
+                self.block_manager.deallocate(seq)
+                self.running.remove(seq)
         return len(seqs)

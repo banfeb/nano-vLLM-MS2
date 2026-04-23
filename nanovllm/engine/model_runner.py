@@ -132,9 +132,9 @@ class ModelRunner:
                 module.v_cache = self.kv_cache[1, layer_id]
                 layer_id += 1
 
-    def prepare_block_tables(self, seqs: list[Sequence]):
-        max_len = max(len(seq.block_table) for seq in seqs)
-        block_tables = [seq.block_table + [-1] * (max_len - len(seq.block_table)) for seq in seqs]
+    def prepare_block_tables(self, block_tables_list: list[list[int]]):
+        max_len = max(len(block_table) for block_table in block_tables_list)
+        block_tables = [block_table + [-1] * (max_len - len(block_table)) for block_table in block_tables_list]
         block_tables = torch.tensor(block_tables, dtype=torch.int32, pin_memory=True).cuda(non_blocking=True)
         return block_tables
 
@@ -167,7 +167,7 @@ class ModelRunner:
                     end = start + seq.last_block_num_tokens 
                 slot_mapping.extend(list(range(start, end)))
         if cu_seqlens_k[-1] > cu_seqlens_q[-1]:    # prefix cache
-            block_tables = self.prepare_block_tables(seqs)
+            block_tables = self.prepare_block_tables([seq.block_table for seq in seqs])
         input_ids = torch.tensor(input_ids, dtype=torch.int64, pin_memory=True).cuda(non_blocking=True)
         positions = torch.tensor(positions, dtype=torch.int64, pin_memory=True).cuda(non_blocking=True)
         cu_seqlens_q = torch.tensor(cu_seqlens_q, dtype=torch.int32, pin_memory=True).cuda(non_blocking=True)
@@ -190,7 +190,7 @@ class ModelRunner:
         positions = torch.tensor(positions, dtype=torch.int64, pin_memory=True).cuda(non_blocking=True)
         slot_mapping = torch.tensor(slot_mapping, dtype=torch.int32, pin_memory=True).cuda(non_blocking=True)
         context_lens = torch.tensor(context_lens, dtype=torch.int32, pin_memory=True).cuda(non_blocking=True)
-        block_tables = self.prepare_block_tables(seqs)
+        block_tables = self.prepare_block_tables([seq.block_table for seq in seqs])
         set_context(False, slot_mapping=slot_mapping, context_lens=context_lens, block_tables=block_tables)
         return input_ids, positions
 
@@ -230,29 +230,47 @@ class ModelRunner:
         self,
         seqs: list[Sequence],
         draft_token_ids: list[list[int]],
+        reservations: list[dict[str, list[int] | int]],
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        # 这个函数实际执行的是prefill
         input_ids: list[int] = []
         positions: list[int] = []
         draft_row_indices: list[int] = []
         bonus_row_indices: list[int] = []
-        cu_seqlens = [0]
-        max_seqlen = 0
+        cu_seqlens_q = [0]
+        cu_seqlens_k = [0]
+        max_seqlen_q = 0
+        max_seqlen_k = 0
         offset = 0
-        for seq, seq_draft_token_ids in zip(seqs, draft_token_ids):
-            seq_token_ids = seq.token_ids + seq_draft_token_ids
-            seq_len = len(seq_token_ids)
+        slot_mapping: list[int] = []
+        block_tables_list: list[list[int]] = []
+        for seq, seq_draft_token_ids, reservation in zip(seqs, draft_token_ids, reservations):
+            seq_start_pos = seq.num_computed_tokens
+            seq_len = len(seq)
+            seq_total_len = seq_len + len(seq_draft_token_ids)
+            seq_input_ids = seq.token_ids[seq_start_pos:] + seq_draft_token_ids
             num_drafts = len(seq_draft_token_ids)
-            input_ids.extend(seq_token_ids)
-            positions.extend(range(seq_len))
-            cu_seqlens.append(cu_seqlens[-1] + seq_len)
-            max_seqlen = max(max_seqlen, seq_len)
+            q_len = len(seq_input_ids)
+            block_table = seq.block_table + reservation["new_block_ids"]
+
+            input_ids.extend(seq_input_ids)
+            positions.extend(range(seq_start_pos, seq_total_len))
+            cu_seqlens_q.append(cu_seqlens_q[-1] + q_len)
+            cu_seqlens_k.append(cu_seqlens_k[-1] + seq_total_len)
+            max_seqlen_q = max(max_seqlen_q, q_len)
+            max_seqlen_k = max(max_seqlen_k, seq_total_len)
+            block_tables_list.append(block_table)
+
+            for pos in range(seq_start_pos, seq_total_len):
+                block_id = block_table[pos // self.block_size]
+                slot_mapping.append(block_id * self.block_size + pos % self.block_size)
+
+            draft_start = q_len - num_drafts - 1
             if num_drafts > 0:
                 draft_row_indices.extend(
-                    range(offset + len(seq) - 1, offset + len(seq) - 1 + num_drafts)
+                    range(offset + draft_start, offset + draft_start + num_drafts)
                 )
-            bonus_row_indices.append(offset + seq_len - 1)
-            offset += seq_len
+            bonus_row_indices.append(offset + q_len - 1)
+            offset += q_len
 
         input_ids_tensor = torch.tensor(input_ids, dtype=torch.int64, pin_memory=True).cuda(non_blocking=True)
         positions_tensor = torch.tensor(positions, dtype=torch.int64, pin_memory=True).cuda(non_blocking=True)
@@ -261,16 +279,18 @@ class ModelRunner:
             dtype=torch.int64,
             pin_memory=True,
         ).cuda(non_blocking=True)
-        cu_seqlens_tensor = torch.tensor(cu_seqlens, dtype=torch.int32, pin_memory=True).cuda(non_blocking=True)
-        slot_mapping = torch.full((len(input_ids),), -1, dtype=torch.int32, device=input_ids_tensor.device)
+        cu_seqlens_q_tensor = torch.tensor(cu_seqlens_q, dtype=torch.int32, pin_memory=True).cuda(non_blocking=True)
+        cu_seqlens_k_tensor = torch.tensor(cu_seqlens_k, dtype=torch.int32, pin_memory=True).cuda(non_blocking=True)
+        slot_mapping_tensor = torch.tensor(slot_mapping, dtype=torch.int32, pin_memory=True).cuda(non_blocking=True)
+        block_tables = self.prepare_block_tables(block_tables_list)
         set_context(
             True,
-            cu_seqlens_q=cu_seqlens_tensor,
-            cu_seqlens_k=cu_seqlens_tensor,
-            max_seqlen_q=max_seqlen,
-            max_seqlen_k=max_seqlen,
-            slot_mapping=slot_mapping,
-            block_tables=None,
+            cu_seqlens_q=cu_seqlens_q_tensor,
+            cu_seqlens_k=cu_seqlens_k_tensor,
+            max_seqlen_q=max_seqlen_q,
+            max_seqlen_k=max_seqlen_k,
+            slot_mapping=slot_mapping_tensor,
+            block_tables=block_tables,
         )
         return input_ids_tensor, positions_tensor, verify_row_indices
 
@@ -298,21 +318,23 @@ class ModelRunner:
         )
         return sampled_verify_token_ids
 
-
-    def run_spec_decode(self, seqs: list[Sequence]) -> list[list[int]] | None:
+    def run_spec_decode(
+        self,
+        seqs: list[Sequence],
+        draft_token_ids: list[list[int]],
+        reservations: list[dict[str, list[int] | int]],
+    ) -> list[list[int]] | None:
         """
-            执行流程: draft -> verify_logits -> reject_sampler
+            执行流程: draft -> run_target_model -> reject_sampler
             一个request首次执行prefill时不会进入这个流程
         """
         temperatures = self.prepare_sample(seqs) if self.rank == 0 else None
-        draft_token_ids = self.propose_draft_token_ids(seqs)
-        input_ids, positions, verify_row_indices = self.prepare_spec_decode(seqs, draft_token_ids)
+        input_ids, positions, verify_row_indices = self.prepare_spec_decode(seqs, draft_token_ids, reservations)
         
         verify_logits = self.run_model(
             input_ids,
             positions,
             is_prefill=True,
-            is_spec_verify=True,
             spec_row_indices=verify_row_indices,
         )
         verified_token_ids = self.verify_draft_token_ids(
@@ -329,15 +351,11 @@ class ModelRunner:
         input_ids: torch.Tensor,
         positions: torch.Tensor,
         is_prefill: bool,
-        is_spec_verify: bool = False,
         spec_row_indices: torch.Tensor | None = None,
     ): 
-        # 目前进行spec_decoding校验时, 还是复用了prefill, 对显存压力较大并且无加速效果
-        # TODO: 完善增量prefill
-        if is_prefill and is_spec_verify:
+        if is_prefill and spec_row_indices is not None:
             hidden_states = self.model(input_ids, positions)
-            if spec_row_indices is not None:
-                hidden_states = hidden_states.index_select(0, spec_row_indices)
+            hidden_states = hidden_states.index_select(0, spec_row_indices)
             return self.model.lm_head(hidden_states, return_all_logits=True)
         if is_prefill or self.enforce_eager or input_ids.size(0) > 512:
             return self.model.compute_logits(self.model(input_ids, positions))
@@ -357,9 +375,6 @@ class ModelRunner:
             return self.model.compute_logits(graph_vars["outputs"][:bs])
 
     def run(self, seqs: list[Sequence], is_prefill: bool) -> list[int] | list[list[int]]:
-        if not is_prefill and self.speculative_config:
-            return self.run_spec_decode(seqs)
-
         input_ids, positions = self.prepare_prefill(seqs) if is_prefill else self.prepare_decode(seqs)
         temperatures = self.prepare_sample(seqs) if self.rank == 0 else None
         logits = self.run_model(input_ids, positions, is_prefill)

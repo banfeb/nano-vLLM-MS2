@@ -10,6 +10,7 @@ def main():
         path, 
         enforce_eager=True, 
         tensor_parallel_size=1,
+        gpu_memory_utilization=0.8,
         speculative_config={
             "method": "ngram",
             "num_speculative_tokens": 2,
@@ -17,10 +18,13 @@ def main():
         }
     )
 
-    sampling_params = SamplingParams(temperature=0.6, max_tokens=128)
+    sampling_params = SamplingParams(temperature=0.6, max_tokens=256 * 8)
     prompts = [
         "introduce yourself",
         "list all prime numbers within 100",
+        "introduce chatgpt",
+        "introduce gemini",
+        "introduce gork"
     ]
     prompts = [
         tokenizer.apply_chat_template(
