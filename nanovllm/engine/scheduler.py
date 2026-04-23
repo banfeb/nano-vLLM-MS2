@@ -67,9 +67,11 @@ class Scheduler:
         self,
         seqs: list[Sequence],
         token_ids: list[list[int]],
-    ) -> None:
+    ) -> int:
+        num_tokens: int = 0
         for seq, seq_token_ids in zip(seqs, token_ids):
             for token_idx, token_id in enumerate(seq_token_ids):
+                num_tokens += 1
                 if token_idx > 0:
                     if not self.block_manager.can_append(seq):
                         raise RuntimeError(
@@ -84,14 +86,16 @@ class Scheduler:
                     self.block_manager.deallocate(seq)
                     self.running.remove(seq)
                     break
+        return num_tokens
 
-    def postprocess(self, seqs: list[Sequence], token_ids: list[int] | list[list[int]]) -> None:
+    def postprocess(self, seqs: list[Sequence], token_ids: list[int] | list[list[int]]) -> int:
         if self.is_spec_decoding and not isinstance(token_ids[0], int):
-            self.postprocess_spec_decode(seqs, token_ids)
-            return
+            return self.postprocess_spec_decode(seqs, token_ids)
+  
         for seq, token_id in zip(seqs, token_ids):
                 seq.append_token(token_id)
                 if (not seq.ignore_eos and token_id == self.eos) or seq.num_completion_tokens >= seq.max_tokens:
                     seq.status = SequenceStatus.FINISHED
                     self.block_manager.deallocate(seq)
                     self.running.remove(seq)
+        return len(seqs)
