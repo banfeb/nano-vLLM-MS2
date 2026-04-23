@@ -231,6 +231,7 @@ class ModelRunner:
         seqs: list[Sequence],
         draft_token_ids: list[list[int]],
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        # 这个函数实际执行的是prefill
         input_ids: list[int] = []
         positions: list[int] = []
         draft_row_indices: list[int] = []
@@ -283,6 +284,7 @@ class ModelRunner:
             return None
 
         assert temperatures is not None
+        # 前一部分是requests的draft_token数, 后一部分是requests的bonus_token数
         expected_rows = sum(len(x) for x in draft_token_ids) + len(draft_token_ids)
         if verify_logits.ndim != 2 or verify_logits.size(0) != expected_rows:
             raise ValueError(
@@ -298,6 +300,10 @@ class ModelRunner:
 
 
     def run_spec_decode(self, seqs: list[Sequence]) -> list[list[int]] | None:
+        """
+            执行流程: draft -> verify_logits -> reject_sampler
+            一个request首次执行prefill时不会进入这个流程
+        """
         temperatures = self.prepare_sample(seqs) if self.rank == 0 else None
         draft_token_ids = self.propose_draft_token_ids(seqs)
         input_ids, positions, verify_row_indices = self.prepare_spec_decode(seqs, draft_token_ids)
@@ -325,7 +331,9 @@ class ModelRunner:
         is_prefill: bool,
         is_spec_verify: bool = False,
         spec_row_indices: torch.Tensor | None = None,
-    ):
+    ): 
+        # 目前进行spec_decoding校验时, 还是复用了prefill, 对显存压力较大并且无加速效果
+        # TODO: 完善增量prefill
         if is_prefill and is_spec_verify:
             hidden_states = self.model(input_ids, positions)
             if spec_row_indices is not None:

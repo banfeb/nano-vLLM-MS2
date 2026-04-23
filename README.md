@@ -35,7 +35,7 @@ huggingface-cli download --resume-download yujiepan/qwen3-moe-tiny-random \
 
 ## Quick Start
 
-See `example_moe.py` for usage. The API mirrors vLLM's interface with minor differences in the `LLM.generate` method:
+See `example_moe.py` or `example_sd.py` for usage. The API mirrors vLLM's interface with minor differences in the `LLM.generate` method:
 ```python
 from nanovllm import LLM, SamplingParams
 llm = LLM("/YOUR/MODEL/PATH", enforce_eager=True, tensor_parallel_size=1)
