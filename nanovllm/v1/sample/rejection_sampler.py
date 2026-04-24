@@ -9,11 +9,11 @@ PLACEHOLDER_TOKEN_ID = -1
 
 @triton.jit
 def _sample_recovered_tokens_kernel(
-    output_token_ids_ptr,  # [num_tokens]
-    cu_num_draft_tokens_ptr,  # [batch_size]
-    draft_token_ids_ptr,  # [num_tokens]
-    draft_probs_ptr,  # [num_tokens, vocab_size]
-    target_probs_ptr,  # [num_tokens, vocab_size]
+    output_token_ids_ptr,       # [num_tokens]
+    cu_num_draft_tokens_ptr,    # [batch_size]
+    draft_token_ids_ptr,        # [num_tokens]
+    draft_probs_ptr,            # [num_tokens, vocab_size]
+    target_probs_ptr,           # [num_tokens, vocab_size]
     q_ptr,
     vocab_size,
     PADDED_VOCAB_SIZE: tl.constexpr,

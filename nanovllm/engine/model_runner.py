@@ -232,6 +232,11 @@ class ModelRunner:
         draft_token_ids: list[list[int]],
         reservations: list[dict[str, list[int] | int]],
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+            reservations: seq在speculative decoding阶段的临时KV cache预留记录
+                          e.g. {"draft_len": 4, "new_block_ids": [37]}
+        """
+        
         input_ids: list[int] = []
         positions: list[int] = []
         draft_row_indices: list[int] = []
@@ -324,10 +329,6 @@ class ModelRunner:
         draft_token_ids: list[list[int]],
         reservations: list[dict[str, list[int] | int]],
     ) -> list[list[int]] | None:
-        """
-            执行流程: draft -> run_target_model -> reject_sampler
-            一个request首次执行prefill时不会进入这个流程
-        """
         temperatures = self.prepare_sample(seqs) if self.rank == 0 else None
         input_ids, positions, verify_row_indices = self.prepare_spec_decode(seqs, draft_token_ids, reservations)
         

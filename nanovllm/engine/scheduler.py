@@ -68,6 +68,7 @@ class Scheduler:
         seqs: list[Sequence],
         draft_token_ids: list[list[int]],
     ) -> tuple[list[list[int]], list[dict[str, list[int] | int]]]:
+        """为draft token分配block"""
         reserved_draft_token_ids: list[list[int]] = []
         reservations: list[dict[str, list[int] | int]] = []
         for seq, seq_draft_token_ids in zip(seqs, draft_token_ids):
@@ -89,6 +90,10 @@ class Scheduler:
         draft_token_ids: list[list[int]],
         reservations: list[dict[str, list[int] | int]],
     ) -> int:
+        """
+            token_ids: 拒绝采样后的tokens
+            draft_token_ids: 拒绝采样前提出的draft tokens
+        """
         num_tokens: int = 0
         for seq, seq_token_ids, seq_draft_token_ids, reservation in zip(seqs, token_ids, draft_token_ids, reservations):
             old_len = len(seq)

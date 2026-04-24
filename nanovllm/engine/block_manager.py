@@ -126,13 +126,11 @@ class BlockManager:
             assert last_block.hash == -1
 
     def get_num_appendable_tokens(self, seq: Sequence) -> int:
+        """该序列seq理论上最多能再追加多少个token"""
         covered_tokens = len(seq.block_table) * self.block_size
         return covered_tokens - len(seq) + len(self.free_block_ids) * self.block_size
 
     def reserve_spec_append(self, seq: Sequence, num_tokens: int) -> list[int]:
-        if num_tokens <= 0:
-            return []
-
         num_required_blocks = (len(seq) + num_tokens + self.block_size - 1) // self.block_size - len(seq.block_table)
         if num_required_blocks <= 0:
             return []
