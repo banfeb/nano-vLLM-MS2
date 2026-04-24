@@ -5,18 +5,15 @@
 
 # Nano-vLLM-MS
 
-nano-vllm基础上完成:
-1. 对moe模型的支持
-2. 对Speculative Decoding技术的支持
+A lightweight vLLM implementation based on nano-vLLM, enhanced with MoE model support and Speculative Decoding.
 
 ## Key Features
 
-* ✅ **MoE model support** - End-to-end support for MoE models in the nano-vLLM pipeline.
-* ✅ **Speculative Decoding (N-gram draft + rejection sampling)** - Decode path now supports N-gram drafting, verify pass, and scheduler post-processing for accepted tokens.
-* ✅ **Optional speculative config** - `speculative_config` is optional; regular decode path still works when it is not provided.
-* ✅ **N-gram proposer threading control** - 已加入“决定是否启用多线程”的门限参数（当前策略在 `tp=1` 场景下可用）。
-* ⚠️ **Spec Decode TP TODO** - 如果有 TP 需要重新考虑线程参数；TODO: 之后完成 `spec_decode` 的 TP 并行后，重新调整线程参数策略。
-* ⚡ **Optimization suite** - Prefix caching, Tensor Parallelism, Torch compilation, CUDA graph, etc.
+* ✅ **MoE model support** - Supports Qwen3-MoE models in the nano-vLLM inference pipeline. Included router-based top-k expert selection and fused expert computation.
+* ✅ **Speculative Decoding pipeline** - Implements an end-to-end speculative decoding path with N-gram draft token proposal.
+* 🚀 **Efficient N-gram proposer** - Uses prompt lookup with Numba acceleration and adaptive threading control to reduce drafting overhead for larger batches.
+* ⚡ **Performance-oriented runtime** - Retains nano-vLLM optimizations such as prefix caching, tensor parallelism, CUDA graph capture, etc.
+* 📊 **Reproducible examples and benchmark** - Provides `example_moe.py`, `example_sd.py`, and `bench.py` to quickly validate functionality and compare throughput with vLLM.
 
 ## Installation
 
@@ -38,7 +35,7 @@ huggingface-cli download --resume-download yujiepan/qwen3-moe-tiny-random \
 See `example_moe.py` or `example_sd.py` for usage. The API mirrors vLLM's interface with minor differences in the `LLM.generate` method:
 ```python
 from nanovllm import LLM, SamplingParams
-llm = LLM("/YOUR/MODEL/PATH", enforce_eager=True, tensor_parallel_size=1)
+llm = LLM("/YOUR/MODEL/PATH", enforce_eager=True, tensor_parallel_size=1,speculative_config={})
 sampling_params = SamplingParams(temperature=0.6, max_tokens=256)
 prompts = ["Hello, Nano-vLLM-MS."]
 outputs = llm.generate(prompts, sampling_params)
