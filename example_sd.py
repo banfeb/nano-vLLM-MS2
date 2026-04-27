@@ -13,7 +13,7 @@ def main():
         gpu_memory_utilization=0.8,
         speculative_config={
             "method": "ngram",
-            "num_speculative_tokens": 2,
+            "num_speculative_tokens": 3,
             "prompt_lookup_max": 2,
         }
     )

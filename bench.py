@@ -13,10 +13,21 @@ def main():
 
     qwen3_0_6B = "/data/wxtang/model/models--Qwen--Qwen3-0.6B/snapshots/c1899de289a04d12100db370d81485cdf75e47ca"
     qwen3_moe_tiny_random = "/data/wxtang/model/models--yujiepan--qwen3-moe-tiny-random/snapshots/fb6c5ee2a2c19bd9aced6d9afd8a858966a7bb7e"
-    path = os.path.expanduser(qwen3_moe_tiny_random)
+    path = os.path.expanduser(qwen3_0_6B)
     # enforce_eager False代表开启图捕获优化，但moe暂时未能支持图捕获优化，
     # 因此这里设置为True以确保正确性。后续moe支持图捕获优化后，可以将enforce_eager设置为False以获得更好的性能。
-    llm = LLM(path, enforce_eager=True, max_model_len=4096)
+    llm = LLM(
+            path, 
+            enforce_eager=True, 
+            max_model_len=4096, 
+            gpu_memory_utilization=0.8,
+            tensor_parallel_size=1,
+              speculative_config={
+                "method": "ngram",
+                "num_speculative_tokens": 3,
+                "prompt_lookup_max": 2,
+            }
+          )
 
     prompt_token_ids = [[randint(0, 10000) for _ in range(randint(100, max_input_len))] for _ in range(num_seqs)]
     sampling_params = [SamplingParams(temperature=0.6, ignore_eos=True, max_tokens=randint(100, max_ouput_len)) for _ in range(num_seqs)]
