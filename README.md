@@ -82,10 +82,10 @@ To evaluate speculative decoding, we additionally benchmarked Nano-vLLM-MS on `Q
 - Comparison: standard decoding vs. speculative decoding
 
 **Performance Results:**
-| Mode | Throughput (tokens/s) |
-|------|------------------------|
-| Standard decoding | 1,418.09 |
-| Speculative decoding | 1,996.81 |
+| Mode | Output Tokens | Time (s) |  Throughput (tokens/s) |
+|------|---------------|----------|------------------------|
+| Standard decoding    | 133,966  | 94.47  | 1,418.09 |
+| Speculative decoding | 133,966  | 67.09  | 1,996.81 |
 
 Speculative decoding improves throughput from `1418.09 tok/s` to `1996.81 tok/s`, which is about a `40.8%` increase in this setup.
 
